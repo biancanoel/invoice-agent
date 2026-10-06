@@ -94,6 +94,11 @@ def format_plan(plan: InvoicePlan, config: Config, pdf_path: Path) -> str:
     return "\n".join(lines)
 
 
+def format_problems(weeks: list[TimesheetWeek]) -> list[str]:
+    """One warning line per failed consistency check, for screenshots used despite problems."""
+    return [f"WARNING ({w.image.name}): {problem}" for w in weeks for problem in w.problems]
+
+
 def format_merge(result: MergeResult) -> str:
     lines = [f"Wrote {result.output} ({len(result.included)} pages):"]
     lines.extend(f"  week of {shot.week_start:%b %d}: {shot.path.name}" for shot in result.included)

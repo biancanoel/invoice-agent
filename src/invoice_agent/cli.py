@@ -22,10 +22,18 @@ from dotenv import load_dotenv
 
 from invoice_agent.config import DEFAULT_PATH, Config, load_config
 from invoice_agent.durations import parse_entry
-from invoice_agent.invoice import InvoiceError, create_invoice, plan_invoice
+from invoice_agent.invoice import InvoiceError, confirm_prompt, create_invoice, is_approval, plan_invoice
 from invoice_agent.merge import MergeError, Screenshot, find_images, merge_screenshots
-from invoice_agent.report import describe_api_error, format_merge, format_plan, format_verify, format_week, format_weeks
-from invoice_agent.timesheet import TimesheetReadError, TimesheetWeek, make_client, read_folder
+from invoice_agent.report import (
+    describe_api_error,
+    format_merge,
+    format_plan,
+    format_problems,
+    format_verify,
+    format_week,
+    format_weeks,
+)
+from invoice_agent.timesheet import TimesheetReadError, TimesheetWeek, make_client, merge_weeks, read_folder
 from invoice_agent.verify import VerifyResult, verify_totals
 from invoice_agent.weeks import Month, week_start_for
 
@@ -136,14 +144,14 @@ def _cmd_invoice(args: argparse.Namespace) -> int:
     if result is None or not result.ok:
         return 1
     plan = plan_invoice(result, config.name_format)
-    pdf_path = args.out or args.folder / f"Invoice {plan.invoice_number}.pdf"
+    pdf_path = args.out or args.folder / plan.month.invoice_pdf_name
     print()
     print(format_plan(plan, config, pdf_path))
     if args.dry_run:
         print("\nDry run: nothing was created.")
         return 0
 
-    if input(f"\nCreate '{plan.name}'? [y/N] ").strip().lower() not in ("y", "yes"):
+    if not is_approval(input(confirm_prompt(plan))):
         print("Cancelled; nothing was created.")
         return 1
     try:
@@ -213,39 +221,39 @@ def _cmd_merge(args: argparse.Namespace) -> int:
         print(f"No PNG/JPG images in {args.folder}", file=sys.stderr)
         return 1
 
-    if args.weeks or args.manual:
-        if args.weeks:
-            dates = [d.strip() for d in args.weeks.split(",")]
-            if len(dates) != len(images):
-                print(f"Got {len(dates)} dates for {len(images)} images:", file=sys.stderr)
-                _list_images(images, file=sys.stderr)
-                return 1
-        else:
-            dates = _prompt_for_weeks(images)
-        try:
-            starts = [(path, week_start_for(date.fromisoformat(d))) for path, d in zip(images, dates) if d]
-        except ValueError as err:
-            print(f"Error: {err}", file=sys.stderr)
-            return 1
-    else:
-        weeks = _read_all(args.folder)
-        if weeks is None:
-            return 1
-        for week in weeks:
-            for problem in week.problems:
-                print(f"  WARNING ({week.image.name}): {problem}")
-        starts = [(w.image, w.week_start) for w in weeks]
-
+    out = args.out or args.folder / args.month.timesheets_pdf_name
     try:
-        shots = [Screenshot(path, monday) for path, monday in starts]
-        out = args.out or args.folder / f"Timesheets {args.month.invoice_number}.pdf"
-        result = merge_screenshots(shots, args.month, out)
+        if args.weeks or args.manual:
+            dates = _week_dates(args, images)
+            if dates is None:
+                return 1
+            shots = [Screenshot(path, week_start_for(date.fromisoformat(d))) for path, d in zip(images, dates) if d]
+            result = merge_screenshots(shots, args.month, out)
+        else:
+            weeks = _read_all(args.folder)
+            if weeks is None:
+                return 1
+            for warning in format_problems(weeks):
+                print(f"  {warning}")
+            result = merge_weeks(weeks, args.month, out)
     except (MergeError, ValueError) as err:
         print(f"Error: {err}", file=sys.stderr)
         return 1
 
     print(format_merge(result))
     return 0
+
+
+def _week_dates(args: argparse.Namespace, images: list[Path]) -> list[str] | None:
+    """One date per image, from --weeks or by asking; None if --weeks has the wrong count."""
+    if not args.weeks:
+        return _prompt_for_weeks(images)
+    dates = [d.strip() for d in args.weeks.split(",")]
+    if len(dates) != len(images):
+        print(f"Got {len(dates)} dates for {len(images)} images:", file=sys.stderr)
+        _list_images(images, file=sys.stderr)
+        return None
+    return dates
 
 
 def _list_images(images: list[Path], file=sys.stdout) -> None:

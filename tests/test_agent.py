@@ -1,15 +1,14 @@
 import asyncio
 from datetime import date, timedelta
-from pathlib import Path
 
 import pytest
 from PIL import Image
 
-from invoice_agent import timesheet
+from invoice_agent import agent, timesheet
 from invoice_agent.agent import AUTO_APPROVED, CREATE_INVOICE, InvoiceTools, ToolInputError
 from invoice_agent.config import Config
 from invoice_agent.timesheet import TimesheetWeek
-from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ResultMessage
 
 H = 60
 SEPT_MONDAYS = [date(2026, 8, 31), date(2026, 9, 7), date(2026, 9, 14), date(2026, 9, 21), date(2026, 9, 28)]
@@ -21,6 +20,7 @@ ARGS = {"folder": "data/2026-09", "month": "2026-09", "weekly_totals": TOTALS}
 class FakeWorkspace:
     def __init__(self):
         self.copies = []
+        self.cells = {}
 
     def find_file(self, name, folder_id):
         return None
@@ -30,7 +30,7 @@ class FakeWorkspace:
         return "NEW_ID"
 
     def write_cells(self, spreadsheet_id, sheet, cells):
-        pass
+        self.cells = dict(cells)
 
     def export_pdf(self, spreadsheet_id, sheet):
         return b"%PDF-fake"
@@ -162,6 +162,17 @@ def test_approval_covers_only_the_exact_request(project):
         tools.create_invoice(changed)
 
 
+def test_creates_exactly_what_was_approved(project, monkeypatch):
+    tools, workspace = make_tools(project, answer="y")
+    approve(tools, ARGS)
+
+    # A screenshot reading changes after approval; the approved plan is still what gets written.
+    monkeypatch.setattr(timesheet, "read_timesheet", lambda *a, **k: pytest.fail("re-read after approval"))
+    tools.create_invoice(ARGS)
+
+    assert workspace.cells["E20"] == 0.67  # September 1-6 as approved
+
+
 def test_unverified_request_is_denied_without_asking(project):
     tools, _ = make_tools(project)
     tools.ask = lambda prompt: pytest.fail("asked to approve unverified hours")
@@ -223,3 +234,39 @@ def test_system_prompt_names_every_tool_that_exists(project):
     mentioned = set(re.findall(r"\b(?:read|verify|merge|preview|create)_[a-z_]+\b", system_prompt(date.today())))
     assert mentioned <= names, f"prompt mentions tools that don't exist: {mentioned - names}"
     assert {"verify_hours", "merge_timesheets", "preview_invoice", "create_invoice"} <= mentioned
+
+
+# --- chat -----------------------------------------------------------------------
+
+
+class FakeSDKClient:
+    """Reports a running session total on each turn, as the real SDK does in streaming mode."""
+
+    def __init__(self, options):
+        self.turns = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def query(self, message):
+        self.turns += 1
+
+    async def receive_response(self):
+        yield ResultMessage(
+            subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1,
+            session_id="s", total_cost_usd=0.01 * self.turns,
+        )
+
+
+def test_chat_reports_the_running_total_not_a_sum(project, monkeypatch, capsys):
+    tools, _ = make_tools(project)
+    monkeypatch.setattr(agent, "ClaudeSDKClient", FakeSDKClient)
+    replies = iter(["second", "third", "exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(replies))
+
+    asyncio.run(agent.chat(tools, "model", project, first_message="first"))
+
+    assert "Session cost: $0.03" in capsys.readouterr().out  # summing would say $0.06

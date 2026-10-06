@@ -20,6 +20,7 @@ import asyncio
 import json
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -43,10 +44,25 @@ from claude_agent_sdk import (
 
 from invoice_agent.config import Config
 from invoice_agent.durations import parse_entry
-from invoice_agent.invoice import InvoiceError, Workspace, create_invoice, plan_invoice
-from invoice_agent.merge import MergeError, Screenshot, merge_screenshots
-from invoice_agent.report import describe_api_error, format_merge, format_plan, format_verify, format_week
-from invoice_agent.timesheet import TimesheetReadError, TimesheetWeek, make_client, read_folder
+from invoice_agent.invoice import (
+    InvoiceError,
+    InvoicePlan,
+    Workspace,
+    confirm_prompt,
+    create_invoice,
+    is_approval,
+    plan_invoice,
+)
+from invoice_agent.merge import MergeError
+from invoice_agent.report import (
+    describe_api_error,
+    format_merge,
+    format_plan,
+    format_problems,
+    format_verify,
+    format_week,
+)
+from invoice_agent.timesheet import TimesheetReadError, TimesheetWeek, make_client, merge_weeks, read_folder
 from invoice_agent.verify import VerifyResult, verify_totals
 from invoice_agent.weeks import Month
 
@@ -91,25 +107,33 @@ class ToolInputError(ValueError):
     """Bad tool input; the message is shown to Claude so it can correct itself."""
 
 
+@dataclass(frozen=True)
+class PreparedInvoice:
+    """An invoice worked out from verified hours, ready to show for approval or to create."""
+
+    plan: InvoicePlan
+    pdf_path: Path
+
+
 class ApprovalGate:
-    """Remembers create_invoice requests the user approved, each usable once."""
+    """Holds the invoices the user approved, keyed by the exact request; each can be used once.
+
+    The approved plan itself is stored, so what gets created is exactly what
+    the user saw, even if the screenshots change in between.
+    """
 
     def __init__(self) -> None:
-        self._approved: set[str] = set()
+        self._approved: dict[str, PreparedInvoice] = {}
 
     @staticmethod
     def _key(args: dict[str, Any]) -> str:
         return json.dumps({k: args.get(k) for k in ("folder", "month", "weekly_totals")}, sort_keys=True)
 
-    def approve(self, args: dict[str, Any]) -> None:
-        self._approved.add(self._key(args))
+    def approve(self, args: dict[str, Any], invoice: PreparedInvoice) -> None:
+        self._approved[self._key(args)] = invoice
 
-    def consume(self, args: dict[str, Any]) -> bool:
-        key = self._key(args)
-        if key in self._approved:
-            self._approved.remove(key)
-            return True
-        return False
+    def consume(self, args: dict[str, Any]) -> PreparedInvoice | None:
+        return self._approved.pop(self._key(args), None)
 
 
 class InvoiceTools:
@@ -170,19 +194,15 @@ class InvoiceTools:
         except ValueError as err:
             raise ToolInputError(str(err)) from None
 
-    def plan(self, args: dict[str, Any]) -> tuple[str, Callable[[], str]]:
-        """Plan text, plus a function that creates exactly that invoice."""
+    def prepare(self, args: dict[str, Any]) -> PreparedInvoice:
         folder, result = self.verify(args)
         if not result.ok:
             raise ToolInputError(format_verify(result))
         plan = plan_invoice(result, self.config.name_format)
-        pdf_path = folder / f"Invoice {plan.invoice_number}.pdf"
+        return PreparedInvoice(plan, folder / plan.month.invoice_pdf_name)
 
-        def create() -> str:
-            created = create_invoice(plan, self.config, self.workspace_factory(self.config), pdf_path)
-            return f"Created {created.url}\nSaved {created.pdf}"
-
-        return format_plan(plan, self.config, pdf_path), create
+    def describe(self, invoice: PreparedInvoice) -> str:
+        return format_plan(invoice.plan, self.config, invoice.pdf_path)
 
     # --- tool bodies (plain functions, run in a worker thread) ------------------
 
@@ -197,29 +217,25 @@ class InvoiceTools:
     def merge_timesheets(self, args: dict[str, Any]) -> str:
         folder, month = self.folder(args["folder"]), self.month(args["month"])
         weeks = self.read(folder)
-        warnings = [f"WARNING ({w.image.name}): {p}" for w in weeks for p in w.problems]
         try:
-            result = merge_screenshots(
-                [Screenshot(w.image, w.week_start) for w in weeks],
-                month,
-                folder / f"Timesheets {month.invoice_number}.pdf",
-            )
+            result = merge_weeks(weeks, month, folder / month.timesheets_pdf_name)
         except MergeError as err:
             raise ToolInputError(str(err)) from None
-        return "\n".join([*warnings, format_merge(result)])
+        return "\n".join([*format_problems(weeks), format_merge(result)])
 
     def preview_invoice(self, args: dict[str, Any]) -> str:
-        text, _ = self.plan(args)
-        return text + "\nPreview only: nothing was created."
+        return self.describe(self.prepare(args)) + "\nPreview only: nothing was created."
 
     def create_invoice(self, args: dict[str, Any]) -> str:
-        if not self.gate.consume(args):
+        invoice = self.gate.consume(args)
+        if invoice is None:
             raise ToolInputError("Not approved: the user must approve create_invoice in the terminal.")
-        _, create = self.plan(args)
         try:
-            return create()
+            workspace = self.workspace_factory(self.config)
+            created = create_invoice(invoice.plan, self.config, workspace, invoice.pdf_path)
         except (InvoiceError, FileNotFoundError) as err:
             raise ToolInputError(str(err)) from None
+        return f"Created {created.url}\nSaved {created.pdf}"
 
     # --- approval -------------------------------------------------------------
 
@@ -230,14 +246,13 @@ class InvoiceTools:
         if tool_name != CREATE_INVOICE:
             return PermissionResultDeny(message=f"{tool_name} isn't available to this agent.")
         try:
-            text, _ = await asyncio.to_thread(self.plan, input_data)
+            invoice = await asyncio.to_thread(self.prepare, input_data)
         except ToolInputError as err:
             return PermissionResultDeny(message=f"Can't create this invoice: {err}")
-        print(f"\n{text}")
-        answer = await asyncio.to_thread(self.ask, "\nCreate this invoice? [y/N] ")
-        if answer.strip().lower() not in ("y", "yes"):
+        print(f"\n{self.describe(invoice)}")
+        if not is_approval(await asyncio.to_thread(self.ask, confirm_prompt(invoice.plan))):
             return PermissionResultDeny(message="The user declined to create the invoice.")
-        self.gate.approve(input_data)
+        self.gate.approve(input_data, invoice)
         return PermissionResultAllow(updated_input=input_data)
 
     # --- SDK wiring -----------------------------------------------------------
@@ -343,7 +358,9 @@ async def chat(tools: InvoiceTools, model: str, project_root: Path, first_messag
                             elif isinstance(block, ToolUseBlock):
                                 print(f"  [{block.name.removeprefix(f'mcp__{SERVER}__')}]")
                     elif isinstance(msg, ResultMessage):
-                        cost += msg.total_cost_usd or 0
+                        # A running total for the whole session, not this turn's cost.
+                        if msg.total_cost_usd is not None:
+                            cost = msg.total_cost_usd
                         if msg.is_error:
                             print(f"\n(agent stopped: {msg.subtype}{': ' + '; '.join(msg.errors) if msg.errors else ''})")
             message = None

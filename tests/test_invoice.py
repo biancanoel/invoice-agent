@@ -6,7 +6,7 @@ from PIL import Image
 
 from invoice_agent import cli, timesheet
 from invoice_agent.config import Config, Layout, load_config
-from invoice_agent.invoice import InvoiceError, create_invoice, plan_invoice, sheets_date
+from invoice_agent.invoice import InvoiceError, create_invoice, is_approval, plan_invoice, sheets_date
 from invoice_agent.timesheet import TimesheetWeek
 from invoice_agent.verify import verify_totals
 from invoice_agent.weeks import Month
@@ -126,6 +126,24 @@ def test_create_refuses_to_overwrite_existing_invoice(tmp_path):
     with pytest.raises(InvoiceError, match="already exists.*OLD_ID"):
         create_invoice(plan_invoice(verified(), NAME_FORMAT), CONFIG, workspace, tmp_path / "x.pdf")
     assert workspace.copies == []
+
+
+@pytest.mark.parametrize("step, message", [("find_file", "check Google Drive for an existing invoice"), ("copy_file", "copy the invoice template")])
+def test_google_failures_before_the_copy_become_invoice_errors(tmp_path, step, message):
+    workspace = FakeWorkspace()
+
+    def fail(*args):
+        raise ConnectionError("network down")
+
+    setattr(workspace, step, fail)
+    with pytest.raises(InvoiceError, match=f"Couldn't {message}: network down"):
+        create_invoice(plan_invoice(verified(), NAME_FORMAT), CONFIG, workspace, tmp_path / "x.pdf")
+    assert workspace.writes == []
+
+
+@pytest.mark.parametrize("answer, approved", [("y", True), ("YES", True), (" y ", True), ("", False), ("n", False), ("yeah", False)])
+def test_only_an_explicit_yes_approves(answer, approved):
+    assert is_approval(answer) is approved
 
 
 def test_failure_after_copy_reports_the_new_sheet(tmp_path):

@@ -42,8 +42,13 @@ class Month:
         """Invoice number is MM-YYYY, e.g. '09-2026'."""
         return f"{self.month:02d}-{self.year}"
 
-    def contains(self, day: date) -> bool:
-        return self.first_day <= day <= self.last_day
+    @property
+    def invoice_pdf_name(self) -> str:
+        return f"Invoice {self.invoice_number}.pdf"
+
+    @property
+    def timesheets_pdf_name(self) -> str:
+        return f"Timesheets {self.invoice_number}.pdf"
 
 
 @dataclass(frozen=True)

@@ -106,6 +106,24 @@ def test_refresh_ignores_cache(image):
     assert client.calls == 2
 
 
+@pytest.mark.parametrize("damaged", ["{not json", "[]", '{"sha256": "x"}', '{"extraction": {}}'])
+def test_damaged_cache_is_ignored_and_reread(image, damaged):
+    sidecar_path(image).write_text(damaged)
+    client = FakeClient(BOUNDARY)
+    assert read_timesheet(image, client).week_start == date(2026, 8, 31)
+    assert client.calls == 1
+
+
+def test_cache_with_wrong_shape_for_this_image_is_reread(image):
+    import hashlib, json
+
+    digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    sidecar_path(image).write_text(json.dumps({"sha256": digest, "extraction": {"days": "oops"}}))
+    client = FakeClient(BOUNDARY)
+    read_timesheet(image, client)
+    assert client.calls == 1
+
+
 def test_failed_checks_are_not_cached(image):
     bad = extraction(date(2026, 8, 31), ["1h 00m"] + ["0m"] * 6, "9h 00m")
     read_timesheet(image, FakeClient(bad))

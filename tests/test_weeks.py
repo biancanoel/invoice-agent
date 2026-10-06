@@ -33,8 +33,11 @@ def test_six_week_month():
     ]
 
 
-def test_invoice_number():
-    assert Month.parse("2026-09").invoice_number == "09-2026"
+def test_invoice_number_and_file_names():
+    month = Month.parse("2026-09")
+    assert month.invoice_number == "09-2026"
+    assert month.invoice_pdf_name == "Invoice 09-2026.pdf"
+    assert month.timesheets_pdf_name == "Timesheets 09-2026.pdf"
 
 
 def test_week_start_for_sunday_goes_back_to_monday():

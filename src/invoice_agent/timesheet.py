@@ -22,7 +22,8 @@ import anthropic
 from pydantic import BaseModel
 
 from invoice_agent.durations import format_duration, parse_duration
-from invoice_agent.merge import find_images
+from invoice_agent.merge import MergeResult, Screenshot, find_images, merge_screenshots
+from invoice_agent.weeks import Month
 
 MODEL = "claude-sonnet-5-5"
 SIDECAR_SUFFIX = ".timesheet.json"
@@ -33,7 +34,7 @@ This is a screenshot of a weekly timesheet. Transcribe it exactly; do not do any
 
 - date_range_header: the date range shown near the top, e.g. "31 Aug 26 - 06 Sep 26".
 - days: one entry per day column (Mon through Sun), in order. For each, give the
-  column's date as YYYY-MM-DD (the header uses 2-digit years, so "26" means 2026)
+  column's date as YYYY-MM-DD (the header uses 2-digit years: "YY" means 20YY)
   and the value from the bottom "Total" row for that column, copied exactly as
   shown (e.g. "1h 30m", "45m", "0m").
 - weekly_total: the bottom-right grand total, exactly as shown.
@@ -129,20 +130,31 @@ def read_timesheet(
 
     Results with failed checks are returned but not cached, so the next run retries.
     """
-    digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    data = image.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
     sidecar = sidecar_path(image)
-    if not refresh and sidecar.exists():
-        cached = json.loads(sidecar.read_text())
-        if cached.get("sha256") == digest:
-            return to_week(image, Extraction.model_validate(cached["extraction"]))
+    cached = None if refresh else _load_cached(sidecar, digest)
+    if cached:
+        return to_week(image, cached)
 
-    extraction = _extract(image, client or make_client())
+    extraction = _extract(image, data, client or make_client())
     week = to_week(image, extraction)
     if week.ok:
         sidecar.write_text(
             json.dumps({"sha256": digest, "model": MODEL, "extraction": extraction.model_dump()}, indent=2)
         )
     return week
+
+
+def _load_cached(sidecar: Path, digest: str) -> Extraction | None:
+    """The cached transcription, or None if it's missing, stale, or damaged (then the image is re-read)."""
+    try:
+        cached = json.loads(sidecar.read_text())
+        if cached["sha256"] != digest:
+            return None
+        return Extraction.model_validate(cached["extraction"])
+    except (OSError, ValueError, LookupError, TypeError):  # ValueError covers bad JSON and failed validation
+        return None
 
 
 def read_folder(
@@ -164,6 +176,11 @@ def read_folder(
     return weeks
 
 
+def merge_weeks(weeks: list[TimesheetWeek], month: Month, output: Path) -> MergeResult:
+    """Merge screenshots into one PDF, ordered by the week each one was read as showing."""
+    return merge_screenshots([Screenshot(w.image, w.week_start) for w in weeks], month, output)
+
+
 def make_client() -> anthropic.Anthropic:
     """API client from the environment (.env).
 
@@ -178,11 +195,11 @@ def sidecar_path(image: Path) -> Path:
     return image.with_name(image.name + SIDECAR_SUFFIX)
 
 
-def _extract(image: Path, client: anthropic.Anthropic) -> Extraction:
+def _extract(image: Path, data: bytes, client: anthropic.Anthropic) -> Extraction:
     media_type = MEDIA_TYPES.get(image.suffix.lower())
     if media_type is None:
         raise TimesheetReadError(f"{image.name}: unsupported image type")
-    data = base64.standard_b64encode(image.read_bytes()).decode("utf-8")
+    encoded = base64.standard_b64encode(data).decode("utf-8")
 
     response = client.beta.messages.parse(
         model=MODEL,
@@ -195,7 +212,7 @@ def _extract(image: Path, client: anthropic.Anthropic) -> Extraction:
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}},
+                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": encoded}},
                     {"type": "text", "text": PROMPT},
                 ],
             }

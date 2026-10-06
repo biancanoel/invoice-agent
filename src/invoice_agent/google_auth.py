@@ -6,6 +6,7 @@ token.json so later runs don't ask again (until Google expires it).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from google.auth.exceptions import RefreshError
@@ -42,5 +43,13 @@ def get_credentials(credentials_file: Path, token_file: Path) -> Credentials:
         flow = InstalledAppFlow.from_client_secrets_file(str(credentials_file), SCOPES)
         creds = flow.run_local_server(port=0)
 
-    token_file.write_text(creds.to_json())
+    save_token(token_file, creds.to_json())
     return creds
+
+
+def save_token(token_file: Path, text: str) -> None:
+    """Write the saved sign-in readable by the owner only: it holds a long-lived Google refresh token."""
+    fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.chmod(token_file, 0o600)  # the mode above only applies when the file is new

@@ -106,11 +106,19 @@ class CreatedInvoice:
 def create_invoice(plan: InvoicePlan, config: Config, workspace: Workspace, pdf_path: Path) -> CreatedInvoice:
     """Copy the template, fill it in, and save the PDF. Refuses to overwrite an existing invoice."""
     cells = plan.cells(config.layout)  # validate before touching Drive
-    existing = workspace.find_file(plan.name, config.folder_id)
+    # Google's client libraries raise many unrelated exception types (HTTP, auth,
+    # network), so any failure here is reported as an InvoiceError.
+    try:
+        existing = workspace.find_file(plan.name, config.folder_id)
+    except Exception as err:
+        raise InvoiceError(f"Couldn't check Google Drive for an existing invoice: {err}") from err
     if existing:
         raise InvoiceError(f"'{plan.name}' already exists: {sheet_url(existing)}. Delete or rename it first.")
 
-    spreadsheet_id = workspace.copy_file(config.template_id, plan.name, config.folder_id)
+    try:
+        spreadsheet_id = workspace.copy_file(config.template_id, plan.name, config.folder_id)
+    except Exception as err:
+        raise InvoiceError(f"Couldn't copy the invoice template: {err}") from err
     url = sheet_url(spreadsheet_id)
     try:
         workspace.write_cells(spreadsheet_id, config.layout.sheet, cells)
@@ -121,6 +129,15 @@ def create_invoice(plan: InvoicePlan, config: Config, workspace: Workspace, pdf_
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_path.write_bytes(pdf)
     return CreatedInvoice(spreadsheet_id=spreadsheet_id, url=url, pdf=pdf_path)
+
+
+def confirm_prompt(plan: InvoicePlan) -> str:
+    return f"\nCreate '{plan.name}'? [y/N] "
+
+
+def is_approval(answer: str) -> bool:
+    """Only an explicit yes approves; anything else, including a blank answer, is a no."""
+    return answer.strip().lower() in ("y", "yes")
 
 
 def sheet_url(spreadsheet_id: str) -> str:
