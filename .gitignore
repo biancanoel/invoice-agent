@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+dist/
+
+# Secrets: never commit
+.env
+credentials*.json
+token*.json
+client_secret*.json
+config.toml
+
+# Real client data: keep screenshots and outputs out of the repo
+data/
+output/
+*.pdf
+*.png
+*.jpg
+*.jpeg
+!docs/**/*.png
+!examples/**
+
+.DS_Store

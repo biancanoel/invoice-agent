@@ -1,0 +1,26 @@
+# Copy to config.toml and fill in the two IDs. config.toml is gitignored.
+
+# The Google Sheet copied each month. The ID is the long part of its URL:
+# https://docs.google.com/spreadsheets/d/<template_id>/edit
+template_id = ""
+
+# Drive folder for the new invoices: https://drive.google.com/drive/folders/<folder_id>
+folder_id = ""
+
+# Name of each month's copy. {month_name} is e.g. "September".
+name_format = "Invoice {month_name} {year}"
+
+# OAuth client downloaded from Google Cloud, and where the saved sign-in goes.
+credentials_file = "credentials.json"
+token_file = "token.json"
+
+# Where things are in the template. Change only if the template's layout changes.
+[layout]
+sheet = "Invoice"
+submitted_on = "B9"
+invoice_number = "F12"
+due_date = "F16"
+first_line_row = 20
+line_rows = 6
+description_column = "B"
+hours_column = "E"
