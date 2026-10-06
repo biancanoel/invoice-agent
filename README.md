@@ -1,108 +1,190 @@
 # Invoice Agent
 
-Builds the monthly client invoice and a single PDF of weekly timesheet screenshots.
+A small agent that does my monthly contractor invoicing. I describe the month in plain language, and it:
 
-## Status
+1. **Reads** each weekly timesheet screenshot with Claude vision.
+2. **Checks** the weekly totals I typed against what the screenshots show.
+3. **Merges** the screenshots into one timesheet PDF, earliest week first.
+4. **Fills in** a copy of my Google Sheets invoice template and exports it as a PDF, but only after I approve it in the terminal.
 
-| Phase | Piece | State |
-|---|---|---|
-| 1 | `merge_screenshots`: sort weekly screenshots and combine them into one PDF | done |
-| 1 | `read_timesheet`: one vision call per screenshot that returns the week and daily hours | done |
-| 1 | `verify_totals`: plain Python, checks typed weekly totals and works out each week's in-month time | done |
-| 1 | `create_invoice`: copy the Google Sheet template, fill rows, export PDF | built; needs Google setup to run |
-| 2 | Agent built with the Claude Agent SDK (custom tools only, built-in tools off) | done |
-| 3 | Approval gate on `create_invoice` (enforced in CLI and agent), demo data, README polish | partly done |
+It's built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk), with every step also available as a plain CLI command.
 
-## Rules
+## Example session
 
-- **Weeks** run Monday to Sunday, matching the timesheet tool. Invoice line items are those weeks clipped to the month, e.g. September 2026 is `September 1-6, 7-13, 14-20, 21-27, 28-30`.
-- A boundary week (e.g. Aug 31 to Sep 6) is included in **both** months' PDFs. Only the in-month days count toward each invoice.
-- **Invoice number** is `MM-YYYY`, e.g. `09-2026`.
-- Hours on the invoice are decimals. One fixed rate, one client.
-- **Submitted on** and **Due date** are both the last day of the month.
-- Screenshot filenames give the capture time, not the week shown, so they're never used for ordering.
+The numbers below are made up. The invoice preview is real program output; the agent's chat replies are abridged.
 
-## Setup
+```text
+$ uv run invoice-agent agent
+you> October: 15h 20m, 12h, 9h 30m, 10h 15m, 8h. Screenshots are in data/2026-10.
+  [verify_hours]
+  [merge_timesheets]
+  [preview_invoice]
+  [create_invoice]
+
+Invoice plan: 'Invoice October 2026' (copy of template 1AbCdEf...)
+  B9    Submitted on 10/31/2026
+  F12   10-2026
+  F16   46326
+        (due date shows as 10/31/2026)
+  B20   October 1-4          E20   5.33
+  B21   October 5-11         E21   12
+  B22   October 12-18        E22   9.5
+  B23   October 19-25        E23   10.25
+  B24   October 26-31        E24   8
+  row 25 cleared (blank description, 0 hours)
+  Total hours: 45.08  (the sheet's formulas compute the amounts)
+  PDF: data/2026-10/Invoice 10-2026.pdf
+
+Create this invoice? [y/N] y
+
+agent> Done. All five weeks matched your screenshots. The invoice is at
+       https://docs.google.com/spreadsheets/d/.../edit, and both PDFs are in data/2026-10.
+```
+
+The first week runs Mon Sep 28 to Sun Oct 4. I typed the screenshot's full weekly total, 15h 20m. The tool worked out that only 5h 20m of it falls in October, which is 5.33 on the invoice.
+
+## How it works
+
+```mermaid
+flowchart LR
+    you(["You, in the terminal"]) -->|plain language| agent["Agent<br/>Claude Agent SDK"]
+    agent --> tools
+
+    subgraph tools["Invoice tools (Python)"]
+        read["read_timesheets"]
+        verify["verify_hours"]
+        merge["merge_timesheets"]
+        preview["preview_invoice"]
+        create["create_invoice"]
+    end
+
+    read -->|"once per image, cached"| vision["Claude vision<br/>transcribes dates + totals"]
+    verify --> read
+    merge --> pdf1[("Timesheets MM-YYYY.pdf")]
+    create --> gate{"Approve?<br/>y/N in terminal"}
+    gate -->|y| google["Google Drive + Sheets<br/>copy template, fill cells"]
+    google --> pdf2[("Invoice MM-YYYY.pdf")]
+```
+
+### Design decisions
+
+- **Claude transcribes, code calculates.** The vision call only copies text off the screenshot: dates, and values like `"1h 30m"` from the Total row, using structured output. Python does all the parsing, sums and month clipping. It also cross-checks every reading: seven consecutive days starting on a Monday, and daily totals that add up to the weekly total.
+- **An independent check, not a copy.** I type each week's total myself, and the tool compares it to the screenshot to the minute. The agent is told never to fill in the hours from the screenshots, since that would defeat the check.
+- **Approval is enforced in code, not in the prompt.** `create_invoice` is the only tool that changes anything outside this folder. The safeguards:
+  - It isn't on the SDK's auto-approve list, and the permission mode is pinned to `default`.
+  - Every call goes to an approval callback that prints the exact plan and asks `y/N`.
+  - The tool itself refuses unless that exact request was approved, and each approval works only once.
+  - Requests that don't verify are rejected before you're asked.
+- **Least privilege throughout.**
+  - The agent has none of Claude Code's built-in tools (`tools=[]`): no shell, no file editing, no web.
+  - The tools only touch folders inside `data/`.
+  - Your personal Claude Code settings aren't loaded.
+  - Google access is read-only Drive plus the files the app creates, so it can copy the template but can't change or delete anything else.
+- **Plan, then apply.** `plan_invoice` works out every cell value as plain data. The dry run, the approval prompt and the real run all use that same plan, so what you approve is what gets written.
+- **Read each screenshot only once.** Readings are cached next to each image and reused until the image changes, so re-running a month costs about a cent of agent time.
+
+## Quick start
+
+You'll need Python 3.12+, [uv](https://docs.astral.sh/uv/), and an [Anthropic API key](https://console.anthropic.com/). Creating invoices also needs a Google Cloud project; see [Google setup](#google-setup-one-time).
 
 ```bash
+git clone https://github.com/biancanoel/invoice-agent.git
+cd invoice-agent
 uv sync
-cp .env.example .env   # then paste your Anthropic API key into .env
+cp .env.example .env                 # add ANTHROPIC_API_KEY
+cp config.example.toml config.toml   # add your template and folder IDs
 ```
 
-## Usage
-
-```bash
-uv run invoice-agent weeks --month 2026-09            # invoice line items for the month
-uv run invoice-agent read data/2026-09 --month 2026-09 # what Claude read from each screenshot
-uv run invoice-agent merge data/2026-09 --month 2026-09
-uv run invoice-agent verify data/2026-09 --month 2026-09 --hours "2h 30m, 10h, 5h 30m, 7h 30m, 15h 20m"
-```
-
-`verify` takes one entry per week (run `weeks` to see them), earliest first: the **weekly total from the bottom-right of each screenshot**, typed as shown (`40m`, `1h 30m`, `15h 20m`). Decimal hours like `1.5` also work. Each entry is compared to its screenshot in exact minutes. For weeks that cross into another month, the invoice amount is worked out from the screenshot's daily totals, so you never add anything up. The output shows each week's in-month time, the decimal hours for the invoice, and the invoice total. It flags mismatches, missing or duplicate screenshots, and readings that failed their checks.
-
-`read` and `merge` send each screenshot to Claude **once**. The result is saved next to the image as `<image>.timesheet.json`, and later runs reuse it unless the image changes. Use `read --refresh` to force a re-read.
-
-Claude only copies text off the screenshot (the dates and the bottom **Total** row). The code converts durations, adds up hours and checks that:
-- the 7 days run Monday to Sunday with no gaps, and
-- the daily totals add up to the screenshot's weekly total.
-
-A result that fails a check is shown as a `PROBLEM` and isn't saved, so it's re-read next time.
-
-To merge without calling the API, use `merge --manual` (it asks for the week of each image) or `--weeks 2026-08-31,2026-09-07,...`.
-
-### Creating the invoice
-
-```bash
-uv run invoice-agent invoice data/2026-09 --month 2026-09 --hours "1h 40m, 10h, 9h, 0m, 7h 20m" --dry-run
-uv run invoice-agent invoice data/2026-09 --month 2026-09 --hours "1h 40m, 10h, 9h, 0m, 7h 20m"
-```
-
-`invoice` runs the same check as `verify` and stops if anything is flagged. It then shows exactly what will be written to each cell. With `--dry-run` it stops there. Without it, it asks `Create ...? [y/N]` and only then:
-
-1. Checks that this month's invoice doesn't already exist in the folder. If it does, it refuses to overwrite it.
-2. Copies the template into the folder as e.g. `Invoice September 2026`.
-3. Writes the submitted date, invoice number, due date, and each week's description and hours. Unused rows are cleared. The rate and all amounts come from the template's own formulas.
-4. Saves the PDF as `data/2026-09/Invoice 09-2026.pdf`.
-
-### The agent
+Put a month's screenshots in `data/YYYY-MM/`, then either chat with the agent:
 
 ```bash
 uv run invoice-agent agent
-uv run invoice-agent agent "October: 3h, 12h 15m, 9h, 10h 30m, 4h. Screenshots are in data/2026-10."
 ```
 
-A terminal chat built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk). Describe the month in plain language and Claude chooses which tools to call: it verifies your weekly totals against the screenshots, merges the timesheet PDF, previews the invoice, and creates it. If something doesn't match, or it's unclear which month or folder you mean, it asks you.
+or run each step yourself:
+
+```bash
+uv run invoice-agent weeks   --month 2026-10                  # the month's invoice weeks
+uv run invoice-agent read    data/2026-10 --month 2026-10     # what Claude read from each screenshot
+uv run invoice-agent verify  data/2026-10 --month 2026-10 --hours "15h 20m, 12h, 9h 30m, 10h 15m, 8h"
+uv run invoice-agent merge   data/2026-10 --month 2026-10     # Timesheets 10-2026.pdf
+uv run invoice-agent invoice data/2026-10 --month 2026-10 --hours "..." --dry-run
+uv run invoice-agent invoice data/2026-10 --month 2026-10 --hours "..."   # asks y/N, then creates
+```
+
+`--hours` takes one entry per week, earliest first. Each entry is **the weekly total from the bottom-right of that week's screenshot**, typed as shown (`40m`, `1h 30m`, `15h 20m`). Decimals like `1.5` also work.
+
+## Invoice rules
+
+- **Weeks** run Monday to Sunday, like the timesheet app. Each invoice line is one week clipped to the month, e.g. `October 1-4`, `October 5-11`, …, `October 26-31`.
+- A week that spans two months appears in both months' timesheet PDFs. Each invoice counts only its own month's days.
+- **Invoice number** is `MM-YYYY`. **Submitted on** and **Due date** are the last day of the month.
+- Hours on the invoice are decimals to 2 places (40 minutes → 0.67). The rate and all amounts come from the template's own formulas.
+- If this month's invoice already exists in the Drive folder, it refuses to create a second one.
+- Screenshot filenames record the capture time, not the week shown, so they're never used for ordering.
+
+## Agent tools
 
 | Tool | What it does | Runs without asking? |
 |---|---|---|
-| `read_timesheets` | Shows what each screenshot contains | yes |
+| `read_timesheets` | Shows each screenshot's week, daily totals, and time inside the month | yes |
 | `verify_hours` | Checks your weekly totals against the screenshots | yes |
 | `merge_timesheets` | Writes `Timesheets MM-YYYY.pdf` | yes |
 | `preview_invoice` | Shows exactly what would be written (dry run) | yes |
 | `create_invoice` | Copies the template, fills it in, saves the PDF | **no: you approve each call** |
 
-How the agent is locked down (see `agent.py`):
-- **No built-in tools.** Claude Code's shell, file editing and web tools are turned off (`tools=[]`), so the agent can only call the five tools above.
-- **`data/` only.** The tools refuse any folder outside `data/`.
-- **Enforced approval.** `create_invoice` isn't on the auto-approve list, and the permission mode is pinned to `default`. Every call reaches an approval callback in our code, which prints the plan and asks `y/N` in the terminal. The tool also refuses to run unless that exact request was approved, and each approval works only once.
-- **No outside settings.** Your personal Claude Code settings aren't loaded (`setting_sources=[]`).
-- **Cost limits.** Each session is capped at $2 and 40 turns. The cost prints when you exit.
-
-The agent's instructions are in [`src/invoice_agent/prompts/system.md`](src/invoice_agent/prompts/system.md). Its model is set by `agent_model` in `config.toml` (default `claude-sonnet-5-5`).
+- **Instructions:** the agent's instructions are in [`src/invoice_agent/prompts/system.md`](src/invoice_agent/prompts/system.md).
+- **Model:** set by `agent_model` in `config.toml` (default `claude-sonnet-5-5`).
+- **Limits:** each session is capped at $2 and 40 turns, and the cost prints when you exit.
 
 ## Google setup (one time)
 
-1. **Make a dedicated template.** In Drive, open an existing invoice and choose **File > Make a copy**. Name it e.g. `Invoice Template` and don't use it for a real month.
-2. **Create a Google Cloud project** at console.cloud.google.com (e.g. "Invoice Agent").
+1. **Make a dedicated template.** In Drive, open an existing invoice and choose **File > Make a copy**. Name it e.g. `Invoice Template` and keep it unused.
+2. **Create a Google Cloud project** at [console.cloud.google.com](https://console.cloud.google.com/). No billing is needed.
 3. **Turn on the APIs.** Under **APIs & Services > Library**, enable **Google Drive API** and **Google Sheets API**.
 4. **Set up the consent screen.** Under **Google Auth Platform**, choose audience **External** and add your own Google account as a **test user**.
-5. **Create the client.** Under **Clients**, create a **Desktop app** client and download its JSON file. Save it in this folder as `credentials.json`. It's gitignored.
-6. **Fill in the config.** Copy `config.example.toml` to `config.toml` and set `template_id` (from the template's URL) and `folder_id` (from the Drive folder's URL).
+5. **Create the client.** Under **Clients**, create a **Desktop app** client, download its JSON, and save it here as `credentials.json`.
+6. **Fill in the config.** In `config.toml`, set `template_id` (from the template's URL) and `folder_id` (from the Drive folder's URL). If your template's cells differ from the defaults, adjust the `[layout]` section.
 
-The first real run opens a browser to approve access. You'll see a "Google hasn't verified this app" warning because it's your own app; continue past it. The tool asks only for **read-only** access to Drive plus access to **files it creates**, so it can copy your template but can't change or delete anything else. While the app is in testing mode, Google expires the sign-in after 7 days, so expect the browser approval each month.
+The first invoice run opens a browser to approve access. Google shows "Google hasn't verified this app" because it's your own app; continue past it. While the app is in testing mode, Google expires the sign-in after 7 days, so expect to approve again about once a month.
+
+`.env`, `config.toml`, `credentials.json`, `token.json` and `data/` are all gitignored.
+
+## Project layout
+
+```text
+src/invoice_agent/
+  agent.py              Agent SDK tools, approval gate, terminal chat
+  prompts/system.md     the agent's instructions
+  cli.py                command-line entry point (parsing and printing only)
+  timesheet.py          Claude vision transcription + per-image cache
+  verify.py             typed totals vs. screenshots
+  merge.py              timesheet PDF
+  invoice.py            plan_invoice (pure) and create_invoice
+  google_auth.py        Google sign-in
+  google_workspace.py   Drive/Sheets calls
+  weeks.py              Monday-Sunday billing weeks
+  durations.py          "1h 30m" <-> minutes <-> invoice hours
+  report.py             text output shared by the CLI and the agent
+  config.py             config.toml loading and template layout
+```
 
 ## Tests
 
 ```bash
 uv run pytest
 ```
+
+There are 120 tests, all offline. The Claude API, Google APIs and terminal input are replaced with fakes. They cover:
+- week and duration math, including months that start mid-week and weeks that span two months
+- PDF merging and ordering
+- screenshot parsing, consistency checks and caching
+- verification statuses
+- the exact cells written to the invoice
+- every outcome of the agent's approval gate and folder limits
+
+## Status
+
+- [x] **Phase 1:** tools as a CLI (read, verify, merge, invoice)
+- [x] **Phase 2:** agent on the Claude Agent SDK
+- [ ] **Phase 3:** demo data and a dummy template so anyone can try it end to end, and fewer Google re-sign-ins

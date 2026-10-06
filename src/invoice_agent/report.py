@@ -86,7 +86,9 @@ def format_plan(plan: InvoicePlan, config: Config, pdf_path: Path) -> str:
         )
     if layout.line_rows > len(plan.lines):
         first = layout.first_line_row + len(plan.lines)
-        lines.append(f"  rows {first}-{layout.first_line_row + layout.line_rows - 1} cleared (blank description, 0 hours)")
+        last = layout.first_line_row + layout.line_rows - 1
+        rows = f"row {first}" if first == last else f"rows {first}-{last}"
+        lines.append(f"  {rows} cleared (blank description, 0 hours)")
     lines.append(f"  Total hours: {plan.total_hours:g}  (the sheet's formulas compute the amounts)")
     lines.append(f"  PDF: {pdf_path}")
     return "\n".join(lines)

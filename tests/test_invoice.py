@@ -218,3 +218,13 @@ def test_cli_mismatch_stops_before_planning(sept_folder, config_path, monkeypatc
                      "--config", str(config_path)])
     assert code == 1
     assert "MISMATCH" in capsys.readouterr().out
+
+
+def test_plan_text_names_the_cleared_rows():
+    from dataclasses import replace
+
+    from invoice_agent.report import format_plan
+
+    plan = plan_invoice(verified(), NAME_FORMAT)  # 5 weeks in a 6-row template
+    assert "  row 25 cleared" in format_plan(plan, CONFIG, Path("x.pdf"))
+    assert "  rows 24-25 cleared" in format_plan(replace(plan, lines=plan.lines[:4]), CONFIG, Path("x.pdf"))
