@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from invoice_agent import cli
+from invoice_agent import cli, timesheet
 from invoice_agent.config import Config, Layout, load_config
 from invoice_agent.invoice import InvoiceError, create_invoice, plan_invoice, sheets_date
 from invoice_agent.timesheet import TimesheetWeek
@@ -167,7 +167,7 @@ def sept_folder(tmp_path, monkeypatch):
         Image.new("RGB", (20, 20), "white").save(folder / f"{i}.png")
     sheets = iter(sept_sheets())
     monkeypatch.setattr(cli, "make_client", lambda: None)
-    monkeypatch.setattr(cli, "read_timesheet", lambda path, client, refresh=False: next(sheets))
+    monkeypatch.setattr(timesheet, "read_timesheet", lambda path, client, refresh=False: next(sheets))
     return folder
 
 

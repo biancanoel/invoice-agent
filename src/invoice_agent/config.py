@@ -35,6 +35,7 @@ class Config:
     name_format: str = "Invoice {month_name} {year}"
     credentials_file: Path = Path("credentials.json")  # OAuth client from Google Cloud
     token_file: Path = Path("token.json")  # saved sign-in, created on first run
+    agent_model: str = "claude-sonnet-5-5"  # model for the conversational agent
     layout: Layout = field(default_factory=Layout)
 
 

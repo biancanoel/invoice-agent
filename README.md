@@ -10,8 +10,8 @@ Builds the monthly client invoice and a single PDF of weekly timesheet screensho
 | 1 | `read_timesheet`: one vision call per screenshot that returns the week and daily hours | done |
 | 1 | `verify_totals`: plain Python, checks typed weekly totals and works out each week's in-month time | done |
 | 1 | `create_invoice`: copy the Google Sheet template, fill rows, export PDF | built; needs Google setup to run |
-| 2 | Agent built with the Claude Agent SDK (custom tools only, built-in tools off) | |
-| 3 | Approval gate on `create_invoice` (CLI has dry run + y/N prompt), demo data | |
+| 2 | Agent built with the Claude Agent SDK (custom tools only, built-in tools off) | done |
+| 3 | Approval gate on `create_invoice` (enforced in CLI and agent), demo data, README polish | partly done |
 
 ## Rules
 
@@ -63,6 +63,32 @@ uv run invoice-agent invoice data/2026-09 --month 2026-09 --hours "1h 40m, 10h, 
 2. Copies the template into the folder as e.g. `Invoice September 2026`.
 3. Writes the submitted date, invoice number, due date, and each week's description and hours. Unused rows are cleared. The rate and all amounts come from the template's own formulas.
 4. Saves the PDF as `data/2026-09/Invoice 09-2026.pdf`.
+
+### The agent
+
+```bash
+uv run invoice-agent agent
+uv run invoice-agent agent "October: 3h, 12h 15m, 9h, 10h 30m, 4h. Screenshots are in data/2026-10."
+```
+
+A terminal chat built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk). Describe the month in plain language and Claude chooses which tools to call: it verifies your weekly totals against the screenshots, merges the timesheet PDF, previews the invoice, and creates it. If something doesn't match, or it's unclear which month or folder you mean, it asks you.
+
+| Tool | What it does | Runs without asking? |
+|---|---|---|
+| `read_timesheets` | Shows what each screenshot contains | yes |
+| `verify_hours` | Checks your weekly totals against the screenshots | yes |
+| `merge_timesheets` | Writes `Timesheets MM-YYYY.pdf` | yes |
+| `preview_invoice` | Shows exactly what would be written (dry run) | yes |
+| `create_invoice` | Copies the template, fills it in, saves the PDF | **no: you approve each call** |
+
+How the agent is locked down (see `agent.py`):
+- **No built-in tools.** Claude Code's shell, file editing and web tools are turned off (`tools=[]`), so the agent can only call the five tools above.
+- **`data/` only.** The tools refuse any folder outside `data/`.
+- **Enforced approval.** `create_invoice` isn't on the auto-approve list, and the permission mode is pinned to `default`. Every call reaches an approval callback in our code, which prints the plan and asks `y/N` in the terminal. The tool also refuses to run unless that exact request was approved, and each approval works only once.
+- **No outside settings.** Your personal Claude Code settings aren't loaded (`setting_sources=[]`).
+- **Cost limits.** Each session is capped at $2 and 40 turns. The cost prints when you exit.
+
+The agent's instructions are in [`src/invoice_agent/prompts/system.md`](src/invoice_agent/prompts/system.md). Its model is set by `agent_model` in `config.toml` (default `claude-sonnet-5-5`).
 
 ## Google setup (one time)
 

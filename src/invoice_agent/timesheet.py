@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -21,6 +22,7 @@ import anthropic
 from pydantic import BaseModel
 
 from invoice_agent.durations import format_duration, parse_duration
+from invoice_agent.merge import find_images
 
 MODEL = "claude-sonnet-5-5"
 SIDECAR_SUFFIX = ".timesheet.json"
@@ -141,6 +143,25 @@ def read_timesheet(
             json.dumps({"sha256": digest, "model": MODEL, "extraction": extraction.model_dump()}, indent=2)
         )
     return week
+
+
+def read_folder(
+    folder: Path,
+    client: anthropic.Anthropic | None = None,
+    refresh: bool = False,
+    on_read: Callable[[Path], None] | None = None,
+) -> list[TimesheetWeek]:
+    """Read every screenshot in `folder`. `on_read` is called before each image (for progress)."""
+    images = find_images(folder)
+    if not images:
+        raise TimesheetReadError(f"No PNG/JPG images in {folder}")
+    client = client or make_client()
+    weeks = []
+    for path in images:
+        if on_read:
+            on_read(path)
+        weeks.append(read_timesheet(path, client, refresh=refresh))
+    return weeks
 
 
 def make_client() -> anthropic.Anthropic:

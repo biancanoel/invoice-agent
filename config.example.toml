@@ -14,6 +14,9 @@ name_format = "Invoice {month_name} {year}"
 credentials_file = "credentials.json"
 token_file = "token.json"
 
+# Model for the conversational agent (`invoice-agent agent`).
+agent_model = "claude-sonnet-5-5"
+
 # Where things are in the template. Change only if the template's layout changes.
 [layout]
 sheet = "Invoice"

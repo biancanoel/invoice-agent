@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from invoice_agent import cli
+from invoice_agent import cli, timesheet
 from invoice_agent.timesheet import TimesheetWeek
 from invoice_agent.verify import verify_totals
 from invoice_agent.weeks import Month
@@ -119,7 +119,7 @@ def five_images(tmp_path, monkeypatch):
         Image.new("RGB", (20, 20), "white").save(tmp_path / f"{i}.png")
     sheets = iter(full_month())
     monkeypatch.setattr(cli, "make_client", lambda: None)
-    monkeypatch.setattr(cli, "read_timesheet", lambda path, client, refresh=False: next(sheets))
+    monkeypatch.setattr(timesheet, "read_timesheet", lambda path, client, refresh=False: next(sheets))
     return tmp_path
 
 
