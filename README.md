@@ -11,37 +11,37 @@ It's built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk),
 
 ## Example session
 
-The numbers below are made up. The invoice preview is real program output; the agent's chat replies are abridged.
+This runs on the demo data in [`examples/`](examples/): fake screenshots and a fake template. The invoice preview is real program output; the agent's chat replies are abridged.
 
 ```text
 $ uv run invoice-agent agent
-you> October: 15h 20m, 12h, 9h 30m, 10h 15m, 8h. Screenshots are in data/2026-10.
+you> April 2026: 22h 05m, 23h 30m, 25h 40m, 26h 30m, 25h 35m. Screenshots are in data/demo-2026-04.
   [verify_hours]
   [merge_timesheets]
   [preview_invoice]
   [create_invoice]
 
-Invoice plan: 'Invoice October 2026' (copy of template 1AbCdEf...)
-  B9    Submitted on 10/31/2026
-  F12   10-2026
-  F16   46326
-        (due date shows as 10/31/2026)
-  B20   October 1-4          E20   5.33
-  B21   October 5-11         E21   12
-  B22   October 12-18        E22   9.5
-  B23   October 19-25        E23   10.25
-  B24   October 26-31        E24   8
+Invoice plan: 'Invoice April 2026' (copy of template 1AbCdEf...)
+  B9    Submitted on 4/30/2026
+  F12   04-2026
+  F16   46142
+        (due date shows as 4/30/2026)
+  B20   April 1-5            E20   16.58
+  B21   April 6-12           E21   23.5
+  B22   April 13-19          E22   25.67
+  B23   April 20-26          E23   26.5
+  B24   April 27-30          E24   22.33
   row 25 cleared (blank description, 0 hours)
-  Total hours: 45.08  (the sheet's formulas compute the amounts)
-  PDF: data/2026-10/Invoice 10-2026.pdf
+  Total hours: 114.58  (the sheet's formulas compute the amounts)
+  PDF: data/demo-2026-04/Invoice 04-2026.pdf
 
-Create this invoice? [y/N] y
+Create 'Invoice April 2026'? [y/N] y
 
 agent> Done. All five weeks matched your screenshots. The invoice is at
-       https://docs.google.com/spreadsheets/d/.../edit, and both PDFs are in data/2026-10.
+       https://docs.google.com/spreadsheets/d/.../edit, and both PDFs are in data/demo-2026-04.
 ```
 
-The first week runs Mon Sep 28 to Sun Oct 4. I typed the screenshot's full weekly total, 15h 20m. The tool worked out that only 5h 20m of it falls in October, which is 5.33 on the invoice.
+The first week runs Mon Mar 30 to Sun Apr 5. I typed the screenshot's full weekly total, 22h 05m. The tool worked out that 16h 35m of it falls in April, which is 16.58 on the invoice. The last week runs Mon Apr 27 to Sun May 3, so the Friday, May 1 hours are left for May's invoice.
 
 ## How it works
 
@@ -83,6 +83,28 @@ flowchart LR
 - **Plan, then apply.** `plan_invoice` works out every cell value as plain data. The dry run, the approval prompt and the real run all use that same plan, so what you approve is what gets written.
 - **Read each screenshot only once.** Readings are cached next to each image and reused until the image changes, so re-running a month costs about a cent of agent time.
 
+## Try the demo
+
+The repo includes fake data, so you can try everything without your own timesheets:
+
+- `examples/timesheets/`: five weekly screenshots for April 2026. The projects and hours are made up, and the filenames are capture times, deliberately not in week order. To regenerate them, run `scripts/make_demo_screenshots.py`.
+- `examples/invoice-template.xlsx`: an invoice template with fake contact details and a $100/hour rate.
+
+```bash
+cp -R examples/timesheets data/demo-2026-04
+uv run invoice-agent read    data/demo-2026-04 --month 2026-04
+uv run invoice-agent verify  data/demo-2026-04 --month 2026-04 --hours "22h 05m, 23h 30m, 25h 40m, 26h 30m, 25h 35m"
+uv run invoice-agent merge   data/demo-2026-04 --month 2026-04
+uv run invoice-agent invoice data/demo-2026-04 --month 2026-04 --hours "22h 05m, 23h 30m, 25h 40m, 26h 30m, 25h 35m" --dry-run
+```
+
+Reading the screenshots takes an Anthropic API key and costs a few cents. Everything after that runs from the cached readings. To create a real invoice from the demo:
+1. Upload `examples/invoice-template.xlsx` to Google Drive.
+2. Open it with Google Sheets and choose **File > Save as Google Sheets**.
+3. Use that sheet's ID as `template_id` (see [Google setup](#google-setup-one-time)).
+
+To see the agent catch a mistake, change one of the weekly totals.
+
 ## Quick start
 
 You'll need Python 3.12+, [uv](https://docs.astral.sh/uv/), and an [Anthropic API key](https://console.anthropic.com/). Creating invoices also needs a Google Cloud project; see [Google setup](#google-setup-one-time).
@@ -106,7 +128,7 @@ or run each step yourself:
 ```bash
 uv run invoice-agent weeks   --month 2026-10                  # the month's invoice weeks
 uv run invoice-agent read    data/2026-10 --month 2026-10     # what Claude read from each screenshot
-uv run invoice-agent verify  data/2026-10 --month 2026-10 --hours "15h 20m, 12h, 9h 30m, 10h 15m, 8h"
+uv run invoice-agent verify  data/2026-10 --month 2026-10 --hours "15h 20m, 12h, 9h 30m, 10h 15m, 8h 05m"
 uv run invoice-agent merge   data/2026-10 --month 2026-10     # Timesheets 10-2026.pdf
 uv run invoice-agent invoice data/2026-10 --month 2026-10 --hours "..." --dry-run
 uv run invoice-agent invoice data/2026-10 --month 2026-10 --hours "..."   # asks y/N, then creates
@@ -167,6 +189,8 @@ src/invoice_agent/
   durations.py          "1h 30m" <-> minutes <-> invoice hours
   report.py             text output shared by the CLI and the agent
   config.py             config.toml loading and template layout
+examples/               fake screenshots and template for the demo
+scripts/                make_demo_screenshots.py
 ```
 
 ## Tests
@@ -175,7 +199,7 @@ src/invoice_agent/
 uv run pytest
 ```
 
-There are 120 tests, all offline. The Claude API, Google APIs and terminal input are replaced with fakes. They cover:
+There are 137 tests, all offline. The Claude API, Google APIs and terminal input are replaced with fakes. They cover:
 - week and duration math, including months that start mid-week and weeks that span two months
 - PDF merging and ordering
 - screenshot parsing, consistency checks and caching
@@ -187,4 +211,4 @@ There are 120 tests, all offline. The Claude API, Google APIs and terminal input
 
 - [x] **Phase 1:** tools as a CLI (read, verify, merge, invoice)
 - [x] **Phase 2:** agent on the Claude Agent SDK
-- [ ] **Phase 3:** demo data and a dummy template so anyone can try it end to end, and fewer Google re-sign-ins
+- [x] **Phase 3:** demo data, a dummy template, and a code review pass
